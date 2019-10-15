@@ -1,0 +1,25 @@
+{
+  "name": "pccm",
+  "version": "0.0.1-beta",
+  "description": "cluster process management",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/master-genius/pccm.git"
+  },
+  "keywords": [
+    "cluster",
+    "master",
+    "daemon",
+    "process"
+  ],
+  "author": "BraveWang",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/master-genius/pccm/issues"
+  },
+  "homepage": "https://github.com/master-genius/pccm#readme"
+}
