@@ -1,0 +1,14 @@
+[
+    {
+        "app" : "/home/wy/node/nst/tserv.js",
+        "name" : "nst-tserv",
+        "restartCount" : 2,
+        "num" : 2
+    },
+    {
+        "app" : "/home/wy/node/nst/ups.js",
+        "name" : "upload-file-serv",
+        "restartCount" : 2,
+        "num" : 1
+    }
+]

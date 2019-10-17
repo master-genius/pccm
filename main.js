@@ -22,7 +22,8 @@ var pccm = function (options = {}) {
      * {
      *      app : APP OBJECT
      *      status : STOP | RUNNING
-     *      pid : PID
+     *      pid : PID,
+     *      child: CHILD_PROCESS
      * }
      */
     this.appList = {};
@@ -112,7 +113,7 @@ pccm.prototype.showLoadInfo = function (w) {
 /**
  * Master进程调用的函数，用于监听消息事件。
  */
-pccm.prototype.servMessage = function () {
+pccm.prototype.servMessage = function (rundata) {
     var the = this;
 
     cluster.on('message', (worker, msg, handle) => {
@@ -120,6 +121,12 @@ pccm.prototype.servMessage = function () {
             switch(msg.type) {
                 case 'load':
                     the.sendLoadInfo(msg); break;
+                case 'running':
+                    rundata.rcount -= rundata.rcone;
+                    if (rundata.rcount < 0) {
+                        rundata.rcount = 0;
+                    }
+                    break;
                 default:;
             }
         } catch (err) {
@@ -186,13 +193,25 @@ pccm.prototype.serv = function (aj) {
         let cpus = os.cpus().length;
         if (iaj.num <= 0 || iaj.num > (cpus*2+2) ) { iaj.num = cpus; }
         
-        this.servMessage();
+        var rundata = {
+            rcone : iaj.restartCount,
+            rcount : 0,
+            rlimit : iaj.num * iaj.restartCount
+        };
+        this.servMessage(rundata);
 
         for(var i=0; i<num; i++) { cluster.fork(); }
         if (cluster.isMaster) {
             setInterval(() => {
                 var num_dis = iaj.num - Object.keys(cluster.workers).length;
-                for(var i=0; i < num_dis; i++) { cluster.fork(); }
+                rundata.rlimit = num_dis * iaj.restartCount;
+                for(var i=0; i < num_dis; i++) {
+                    if (rundata.rcount >= rundata.rlimit) {
+                        process.exit(0); //如果多次重启失败则退出master进程
+                    }
+                    cluster.fork();
+                    rundata.rcount += 1;
+                }
             }, 2000);
         }
     } else if (cluster.isWorker) {
@@ -208,6 +227,13 @@ pccm.prototype.serv = function (aj) {
             });
             cpuLast = process.cpuUsage();
         }, 1024);
+
+        setTimeout(() => {
+            //告知Master进程，正在运行，可清零重启次数。
+            process.send({
+                type : 'running'
+            });
+        }, 5000);
     }
 };
 
@@ -218,11 +244,15 @@ pccm.prototype.fork1 = function (options = {}) {
                 process.argv.push(options.args[i]);
             }
         }
+        let env = {
+            isFork : 1
+        };
+        for (let k in process.env) {
+            env[k] = process.env[k];
+        }
         let ch = spawn(process.argv[0], process.argv.slice(1), {
-            env : {
-                isFork : true
-            },
-            stdio : options.stdio || ['ignore', 1, 2]
+            env : env,
+            stdio : options.stdio || ['ignore', 1, 2, 'ipc']
         });
         return ch;
     }
@@ -282,6 +312,7 @@ pccm.prototype.init = function () {
         fs.accessSync('./apps.json');
         this.loadFile('./apps.json');
     } catch (err) {
+        console.log(err);
     }
 };
 
@@ -316,7 +347,7 @@ pccm.prototype.addToList = function (a) {
     if (a.name === undefined || a.name.length == 0) {
         a.name = randId();
     }
-    if (this.appList[name] !== undefined) {
+    if (this.appList[a.name] !== undefined) {
         throw new Error(`App<${a.name}> already here`);
     }
     this.appList[a.name] = {
@@ -340,9 +371,16 @@ pccm.prototype.checkApp = function (a) {
     return true;
 };
 
+/**
+ * 最顶端的进程消息管理函数，每一个master进程负责汇报相关状态信息。
+ * 
+ */
+pccm.prototype.rootMsg = function () {
+};
+
 pccm.prototype.daemon = function () {
     var self = this;
-    if (process.env.PCCM_DAEMON === undefined) {
+    /* if (process.env.PCCM_DAEMON === undefined) {
         let args = process.argv.slice(1);
         const serv = spawn (
                 process.argv[0], args,
@@ -354,15 +392,50 @@ pccm.prototype.daemon = function () {
                     }
                 }
             );
-        //serv.unref();
+        serv.unref();
         return true;
-    }
+    } */
 
-    self.init();
+    if (process.env.isFork === undefined) {
+        console.log(process.pid);
+        self.init();
+        let ch = '';
+        for (let k in self.appList) {
+            ch = self.fork1({args : [
+                '--app-config=' + JSON.stringify(self.appList[k])
+            ]});
+            self.appList[k].pid = ch.pid;
+            self.appList[k].status = 'READY';
+            self.appList[k].child = ch;
+        }
+        ch = null;
 
-    for (let i=0; i<self.appList.length; i++) {
+    } else {
+        let argscfg = '--app-config=';
+        let a = '';
+        for (let i=1; i<process.argv.length; i++) {
+            if (process.argv[i].indexOf(argscfg) == 0) {
+                a = JSON.parse(process.argv[i].substring(argscfg.length));
+                break;
+            }
+        }
+
+        process.on('exit', (code) => {
+            process.send({
+                type : 'exit',
+                code : code,
+                appname : a.name
+            });
+        });
         
+        self.serv(a);
+
+        process.send({
+            type : 'running',
+            appname : a.name
+        });
     }
+    
 };
 
 module.exports = pccm;
