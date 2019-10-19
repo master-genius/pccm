@@ -11,6 +11,8 @@ const fs = require('fs');
 const cluster = require('cluster');
 const os = require('os');
 const {spawn} = require('child_process');
+const net = require('net');
+
 
 /**
  * @param {object} options 初始化选项，参考值如下：
@@ -27,8 +29,6 @@ var pccm = function (options = {}) {
      * }
      */
     this.appList = {};
-
-    this.pidIndex = {};
 
 };
 
@@ -65,51 +65,6 @@ pccm.prototype.sendLoadInfo = function () {
     }
 };
 
-/*
-pccm.prototype.showLoadInfo = function (w) {
-    var total = Object.keys(cluster.workers).length;
-    if (this.loadInfo.length >= total) {
-        this.loadInfo.sort((a, b) => {
-            if (a.pid < b.pid) {
-                return -1;
-            } else if (a.pid > b.pid) {
-                return 1;
-            }
-            return 0;
-        });
-
-        var oavg = os.loadavg();
-
-        var oscpu = `  CPU Loadavg  1m: ${oavg[0].toFixed(2)}  5m: ${oavg[1].toFixed(2)}  15m: ${oavg[2].toFixed(2)}\n`;
-
-        var cols = '  PID       CPU       MEM, HEAP, HEAPUSED   CONN\n';
-        var tmp = '';
-        var t = '';
-        for(let i=0; i<this.loadInfo.length; i++) {
-            tmp = (this.loadInfo[i].pid).toString() + '          ';
-            tmp = tmp.substring(0, 10);
-            t = this.loadInfo[i].cpu.user + this.loadInfo[i].cpu.system;
-            t = (t/102400).toFixed(2);
-            tmp += t + '%       ';
-            tmp = tmp.substring(0, 20);
-            tmp += (this.loadInfo[i].mem.rss / (1024*1024)).toFixed(1) + ', ';
-            tmp += (this.loadInfo[i].mem.heapTotal / (1024*1024)).toFixed(1) + ',';
-            tmp += (this.loadInfo[i].mem.heapUsed / (1024*1024)).toFixed(1);
-            tmp += 'M         ';
-            tmp = tmp.substring(0, 42);
-            tmp += this.loadInfo[i].conn.toString();
-            cols += `  ${tmp}\n`;
-        }
-        cols += `  Master PID: ${process.pid}\n`;
-        if (process.send && typeof process.send === 'function') {
-            process.send(oscpu+cols);
-        }
-        this.loadInfo = [w];
-    } else {
-        this.loadInfo.push(w);
-    }
-};
-*/
 /**
  * Master进程调用的函数，用于监听消息事件。
  */
@@ -372,29 +327,76 @@ pccm.prototype.checkApp = function (a) {
 };
 
 /**
- * 最顶端的进程消息管理函数，每一个master进程负责汇报相关状态信息。
- * 
+ * 解析命令
  */
-pccm.prototype.rootMsg = function () {
+pccm.prototype.parseIns = function (inst) {
+    let iarr = inst.split(' ').filter( p => p.length > 0);
+    return iarr;
+};
+
+/**
+ * unix域服务，用于本地命令管理，命令格式：
+ *      子命令 选项
+ * 命令支持：
+ *      start  stop  restart  exit  show  list
+ * 命令基本格式：
+ *  start [APPNAME|all]
+ *  stop [APPNAME|all]
+ *  restart [APPNAME|all]
+ *  show [APPNAME|all]
+ *  list
+ *  exit
+ */
+pccm.prototype.dserv = function () {
+    var Start = function () {
+
+    };
+
+    var Stop = function () {
+
+    };
+
+    var Restart = function () {
+
+    };
+
+    var Show = function () {
+
+    };
+
+    var List = function () {
+
+    };
+
+    let sockfile = '/tmp/pccm.sock';
+    try {
+        fs.unlinkSync(sockfile);
+    } catch (err) {
+        console.log(err.message);
+    }
+    
+    var opts = {
+        allowHalfOpen : true
+    };
+    
+    var serv = net.createServer(opts,(c) => {
+        var totalData = '';
+        c.on('end', () => {
+            c.end(totalData, {encoding:'utf8'});
+        });
+    
+        c.on('data', (data) => {
+            totalData += data.toString('utf8');
+        });
+    });
+    
+    serv.listen(sockfile, () => {
+        console.log('server listening\n');
+    });
 };
 
 pccm.prototype.daemon = function () {
     var self = this;
-    /* if (process.env.PCCM_DAEMON === undefined) {
-        let args = process.argv.slice(1);
-        const serv = spawn (
-                process.argv[0], args,
-                {
-                    detached : true,
-                    stdio : ['ignore', 1, 2],
-                    env : {
-                        PCCM_DAEMON: true
-                    }
-                }
-            );
-        serv.unref();
-        return true;
-    } */
 
     if (process.env.isFork === undefined) {
         console.log(process.pid);
@@ -407,6 +409,18 @@ pccm.prototype.daemon = function () {
             self.appList[k].pid = ch.pid;
             self.appList[k].status = 'READY';
             self.appList[k].child = ch;
+            ch.on('message', (msg) => {
+                switch (msg.type) {
+                    case 'running':
+                        self.appList[msg.appname].status = 'RNNING';
+                        break;
+                    case 'exit':
+                        self.appList[msg.appname].status = 'STOP';
+                        self.appList[msg.appname].child = null;
+                        break;
+                    default:;
+                }
+            });
         }
         ch = null;
 
@@ -430,6 +444,7 @@ pccm.prototype.daemon = function () {
         
         self.serv(a);
 
+        //通知父进程已运行
         process.send({
             type : 'running',
             appname : a.name
